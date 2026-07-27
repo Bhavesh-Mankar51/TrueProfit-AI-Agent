@@ -24,4 +24,4 @@ async def chat(request: ChatRequest) -> ChatResponse:
     logger.info("chat request session=%s message=%r", request.session_id, request.message)
     result = await run_agent(request.session_id, request.message)
     logger.info("chat reply session=%s intent=%s", request.session_id, result.get("intent"))
-    return ChatResponse(reply=result["reply"], actions_taken=result.get("tool_ result"))
+    return ChatResponse(reply=result["reply"], actions_taken=result.get("tool_result"))
