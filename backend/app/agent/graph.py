@@ -431,6 +431,27 @@ async def close_graph() -> None:
     _compiled_graph = None
 
 
+async def get_history(session_id: str) -> list[dict]:
+    """Replay a session's persisted turns, oldest first.
+
+    Returns [] for an unknown session, so a fresh browser just gets the greeting.
+    """
+    graph = await get_graph()
+    config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+    state = await graph.aget_state(config)
+    history = []
+    for message in state.values.get("messages", []):
+        if isinstance(message, HumanMessage):
+            role = "user"
+        elif isinstance(message, AIMessage):
+            role = "agent"
+        else:
+            continue
+        text = message.content if isinstance(message.content, str) else str(message.content)
+        history.append({"role": role, "text": text})
+    return history
+
+
 async def run_agent(session_id: str, message: str) -> dict:
     graph = await get_graph()
     config: RunnableConfig = {"configurable": {"thread_id": session_id}}

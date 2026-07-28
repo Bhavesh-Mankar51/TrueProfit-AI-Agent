@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { sendChatMessage } from "../api/client.js";
+import { fetchChatHistory, sendChatMessage } from "../api/client.js";
 import MessageBubble from "./MessageBubble.jsx";
+
+const GREETING = {
+  role: "agent",
+  text: "Hi! Tell me about a sale, an expense, or ask for a report — e.g. \"sold 2 packets of biscuits for 40\".",
+};
 
 function getSessionId() {
   let id = localStorage.getItem("shopkeeper_session_id");
@@ -13,16 +18,26 @@ function getSessionId() {
 
 export default function ChatWindow({ onActionTaken }) {
   const [sessionId] = useState(getSessionId);
-  const [messages, setMessages] = useState([
-    {
-      role: "agent",
-      text: "Hi! Tell me about a sale, an expense, or ask for a report — e.g. \"sold 2 packets of biscuits for 40\".",
-    },
-  ]);
+  const [messages, setMessages] = useState([GREETING]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const bottomRef = useRef(null);
+
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchChatHistory(sessionId)
+      .then((res) => {
+        if (cancelled || !res.messages?.length) return;
+        setMessages([GREETING, ...res.messages]);
+      })
+      .catch(() => {
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

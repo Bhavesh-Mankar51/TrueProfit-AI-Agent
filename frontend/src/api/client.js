@@ -19,6 +19,10 @@ export function sendChatMessage(sessionId, message) {
   });
 }
 
+export function fetchChatHistory(sessionId) {
+  return request(`/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+}
+
 export function fetchDues(type) {
   return request(`/dues?type=${encodeURIComponent(type)}`);
 }
