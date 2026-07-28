@@ -5,6 +5,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent.graph import close_graph, get_graph
 from app.api import chat, dues, reminders, reports
 from app.config import settings
 from app.reminders import check_due_reminders
@@ -17,6 +18,7 @@ scheduler = AsyncIOScheduler()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await get_graph()
     await check_due_reminders()
     scheduler.add_job(
         check_due_reminders,
@@ -28,6 +30,7 @@ async def lifespan(app: FastAPI):
     logger.info("scheduler started: vendor due check every %sh", settings.REMINDER_CHECK_INTERVAL_HOURS)
     yield
     scheduler.shutdown(wait=False)
+    await close_graph()
 
 
 app = FastAPI(title="Shopkeeper Agent API", lifespan=lifespan)

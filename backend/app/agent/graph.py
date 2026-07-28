@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 from datetime import date, datetime, timedelta
 from typing import Annotated, Literal, TypedDict, cast
@@ -6,14 +8,20 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage
 from langchain_core.runnables import RunnableConfig
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
+from psycopg.rows import dict_row
+from psycopg_pool import AsyncConnectionPool
 from pydantic import BaseModel, Field
 
 from app.agent.mcp_tools import call_tool
+from app.config import settings
 
 load_dotenv()
+
+logger = logging.getLogger("shopkeeper.agent")
 
 MODEL_NAME = os.getenv("AGENT_MODEL", "gpt-4o")
 
@@ -333,7 +341,7 @@ async def format_response_node(state: AgentState) -> dict:
     return {"reply": reply, "messages": [AIMessage(content=reply)]}
 
 
-def build_graph():
+def build_graph(checkpointer):
     graph = StateGraph(AgentState)
 
     graph.add_node("router", router_node)
@@ -380,21 +388,51 @@ def build_graph():
     graph.add_edge("unclear", END)
     graph.add_edge("format_response", END)
 
-    return graph.compile(checkpointer=MemorySaver())
+    return graph.compile(checkpointer=checkpointer)
 
 
 _compiled_graph = None
+_pool: AsyncConnectionPool | None = None
+_init_lock = asyncio.Lock()
 
 
-def get_graph():
-    global _compiled_graph
+async def _open_checkpointer() -> tuple[AsyncConnectionPool, AsyncPostgresSaver]:
+    pool = AsyncConnectionPool(
+        conninfo=settings.CHECKPOINT_DB_URL,
+        max_size=10,
+        open=False,
+        kwargs={"autocommit": True, "row_factory": dict_row, "prepare_threshold": 0},
+    )
+    await pool.open()
+    serde = JsonPlusSerializer(allowed_msgpack_modules=[("app.agent.graph", "RouterDecision")])
+    checkpointer = AsyncPostgresSaver(pool, serde=serde)
+    await checkpointer.setup()
+    return pool, checkpointer
+
+
+async def get_graph():
+    """Compile the graph once, backed by a Postgres-persisted checkpointer."""
+    global _compiled_graph, _pool
     if _compiled_graph is None:
-        _compiled_graph = build_graph()
+        async with _init_lock:
+            if _compiled_graph is None:
+                _pool, checkpointer = await _open_checkpointer()
+                _compiled_graph = build_graph(checkpointer)
+                logger.info("agent checkpointer ready (postgres)")
     return _compiled_graph
 
 
+async def close_graph() -> None:
+    """Release the checkpointer pool on shutdown."""
+    global _compiled_graph, _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+    _compiled_graph = None
+
+
 async def run_agent(session_id: str, message: str) -> dict:
-    graph = get_graph()
+    graph = await get_graph()
     config: RunnableConfig = {"configurable": {"thread_id": session_id}}
     initial_state: AgentState = {
         "messages": [HumanMessage(content=message)],

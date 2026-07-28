@@ -24,6 +24,7 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://shopkeeper:change_me@postgres:5432/shopkeeper_db
+      CHECKPOINT_DB_URL: postgresql://shopkeeper:change_me@postgres:5432/shopkeeper_db
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       CORS_ORIGINS: http://localhost:5173
     depends_on:
