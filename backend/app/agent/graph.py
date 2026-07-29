@@ -124,15 +124,23 @@ Rules:
       assume there's no due date just because it wasn't mentioned
     customer_credit requires amount AND customer_name AND due_date — same rule: always
       ask when it's not given, don't silently leave it blank
-    list_dues requires dues_type (vendor or customer) — but infer this from phrasing
-      first, don't ask by default:
-        dues_type="vendor" for anything about money the shop must PAY OUT — "what do
-          I owe", "who do I owe money to", "loan/dues/bill I have to pay", "pending
-          payments", "what do I need to clear"
-        dues_type="customer" for anything about money owed TO the shop — "who owes
-          me", "pending collections", "outstanding udhaar", "customer credit due"
-      Only ask a clarifying question if the message is truly direction-neutral, e.g.
-      just "show me dues" or "any pending payments?" with no sense of who owes whom.
+    list_dues requires dues_type (vendor or customer) — infer it, don't ask by default.
+      Decide by WHICH COUNTERPARTY is named, not by direction words like "to" or "by":
+        The message mentions customers (customer, customers, udhaar, buyer, or a
+          customer's name) -> dues_type="customer", ALWAYS. Credit the shop gave out
+          is the only customer-side balance that exists, so "money owed to customers",
+          "how much owes to customer", "customer loan summary", "customer dues" and
+          "who owes me" all mean dues_type="customer". The shop never owes a customer
+          in this system — never answer a customer question with vendor data.
+        The message mentions vendors (vendor, supplier, wholesaler, distributor, or a
+          vendor's name) -> dues_type="vendor", the shop's accounts payable.
+        Only when NO counterparty is named at all, fall back to direction: money going
+          OUT ("what do I owe", "bills to pay", "what must I clear") -> "vendor";
+          money coming IN ("pending collections") -> "customer".
+      Only ask a clarifying question when the message names no counterparty AND gives
+      no sense of direction, e.g. just "show me dues". When you do ask, offer the two
+      real options: "vendor dues (money you owe) or customer dues (money owed to you)?"
+      — never phrase it as "owed to customers or by customers".
   If clarification_needed, keep clarification_question short (one sentence).
 - Treat "customer paid back / returned / cleared what they owed" as log_credit_repayment,
   never log_income.
@@ -328,11 +336,27 @@ FORMATTER_SYSTEM_PROMPT = """You turn structured tool output into a short reply 
 shopkeeper. Be brief and concrete — one or two sentences, plain language, no markdown
 headers. Use the currency symbol Rs. Confirmations should read like
 "Logged: Rs 40 cash sale." not a paragraph. If tool_error is present, apologize briefly
-and state what's missing or wrong in plain language."""
+and state what's missing or wrong in plain language.
+
+An empty tool_result ([] or {}) is a successful answer meaning nothing is outstanding —
+report that plainly. Never treat it as a failure and never say you didn't receive any
+information.
+
+The payload also carries the request context. When it is a dues question, describe the
+side that was actually asked about: dues_type="customer" is money customers owe the shop
+("No pending customer dues." / "Ramesh owes you Rs 300."), dues_type="vendor" is money
+the shop owes out ("No pending vendor dues." / "You owe Sharma Traders Rs 2000.").
+Never report vendor figures for a customer question or the reverse."""
 
 
 async def format_response_node(state: AgentState) -> dict:
-    payload = {"tool_result": state.get("tool_result"), "tool_error": state.get("tool_error")}
+    decision = state.get("decision")
+    payload = {
+        "intent": decision.intent if decision else None,
+        "dues_type": decision.dues_type if decision else None,
+        "tool_result": state.get("tool_result"),
+        "tool_error": state.get("tool_error"),
+    }
     llm = _llm()
     system = SystemMessage(content=FORMATTER_SYSTEM_PROMPT)
     human = HumanMessage(content=str(payload))
