@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install --no-cache-dir -r backend/requirements.txt
-RUN pip install --no-cache-dir asyncpg python-dotenv "mcp>=1.2.0"
+RUN pip install --no-cache-dir asyncpg python-dotenv "mcp>=1.2.0,<2.0.0"
 
 COPY backend/ backend/
 COPY mcp_server/ mcp_server/
