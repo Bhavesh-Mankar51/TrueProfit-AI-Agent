@@ -117,7 +117,14 @@ Rules:
 - Only set clarification_needed=true when a field is genuinely required and cannot be
   defaulted or inferred from the conversation:
     log_expense requires amount AND category
-    log_income requires amount
+    log_income requires amount AND description AND customer_name — description is what
+      was sold ("chair", "2 bags of cement"), customer_name is who bought it. Always ask
+      for whichever is missing: "write a sale of rs 20000" gives neither, "sold a chair
+      for 4000" gives no customer. Never log a sale with a blank item or customer. Ask
+      for every missing field in one question, not one per turn. If the user says there
+      is no name — walk-in, unknown, cash counter, "doesn't matter" — set
+      customer_name="Walk-in customer"; if they say the item is unspecified or a mix of
+      things, set description="Unspecified items". Then proceed instead of asking again
     log_credit_repayment requires amount AND customer_name
     vendor_credit requires amount AND vendor_name AND due_date — always ask for a due
       date if the message doesn't give one (e.g. "next week", "by the 5th"); never
@@ -152,6 +159,37 @@ Rules:
 """
 
 
+REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "log_expense": ("amount", "category"),
+    "log_income": ("amount", "description", "customer_name"),
+    "log_credit_repayment": ("amount", "customer_name"),
+    "vendor_credit": ("amount", "vendor_name", "due_date"),
+    "customer_credit": ("amount", "customer_name", "due_date"),
+    "list_dues": ("dues_type",),
+}
+
+FIELD_QUESTIONS: dict[str, str] = {
+    "amount": "How much was it?",
+    "category": "What category should I file that under?",
+    "description": "What was sold?",
+    "customer_name": "Which customer was this for?",
+    "vendor_name": "Which vendor was this with?",
+    "due_date": "When is it due to be paid back?",
+    "dues_type": "Vendor dues (money you owe) or customer dues (money owed to you)?",
+}
+
+
+def missing_required_fields(decision: RouterDecision) -> list[str]:
+    """Required fields the router failed to fill, so we ask instead of writing a
+    half-empty row."""
+    missing = []
+    for field in REQUIRED_FIELDS.get(decision.intent, ()):
+        value = getattr(decision, field, None)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            missing.append(field)
+    return missing
+
+
 async def router_node(state: AgentState) -> dict:
     llm = _llm().with_structured_output(RouterDecision)
     system = SystemMessage(content=ROUTER_SYSTEM_PROMPT.format(today=date.today().isoformat()))
@@ -163,7 +201,7 @@ async def router_node(state: AgentState) -> dict:
 
 def route_after_router(state: AgentState) -> str:
     decision = _decision(state)
-    if decision.clarification_needed:
+    if decision.clarification_needed or missing_required_fields(decision):
         return "clarify"
     return {
         "log_expense": "call_expense_tool",
@@ -178,7 +216,12 @@ def route_after_router(state: AgentState) -> str:
 
 
 async def clarify_node(state: AgentState) -> dict:
-    question = _decision(state).clarification_question or "Could you clarify that?"
+    decision = _decision(state)
+    missing = missing_required_fields(decision)
+    if missing:
+        question = " ".join(FIELD_QUESTIONS[field] for field in missing)
+    else:
+        question = decision.clarification_question or "Could you clarify that?"
     return {"reply": question, "messages": [AIMessage(content=question)]}
 
 

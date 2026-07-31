@@ -6,7 +6,18 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agent import graph as agent_graph
-from app.agent.graph import RouterDecision, route_after_router
+from app.agent.graph import RouterDecision, missing_required_fields, route_after_router
+
+COMPLETE_FIELDS = {
+    "log_expense": dict(amount=40, category="inventory"),
+    "log_income": dict(amount=4000, description="chair", customer_name="Ramesh"),
+    "log_credit_repayment": dict(amount=300, customer_name="Ramesh"),
+    "vendor_credit": dict(amount=2000, vendor_name="Sharma Traders", due_date="2026-08-01"),
+    "customer_credit": dict(amount=300, customer_name="Ramesh", due_date="2026-08-01"),
+    "query_report": {},
+    "list_dues": dict(dues_type="vendor"),
+    "other": {},
+}
 
 
 def decision(**overrides) -> RouterDecision:
@@ -29,12 +40,52 @@ def decision(**overrides) -> RouterDecision:
     ],
 )
 def test_route_after_router_maps_intent_to_node(intent, expected_node):
-    state = {"decision": decision(intent=intent)}
+    state = {"decision": decision(intent=intent, **COMPLETE_FIELDS[intent])}
     assert route_after_router(state) == expected_node
 
 
 def test_route_after_router_clarification_overrides_intent():
     state = {"decision": decision(intent="log_expense", clarification_needed=True)}
+    assert route_after_router(state) == "clarify"
+
+
+@pytest.mark.parametrize(
+    "intent,dropped",
+    [
+        ("log_income", "customer_name"),
+        ("log_income", "description"),
+        ("log_income", "amount"),
+        ("log_expense", "category"),
+        ("log_credit_repayment", "customer_name"),
+        ("vendor_credit", "due_date"),
+        ("customer_credit", "customer_name"),
+        ("list_dues", "dues_type"),
+    ],
+)
+def test_route_after_router_clarifies_when_required_field_missing(intent, dropped):
+    fields = {k: v for k, v in COMPLETE_FIELDS[intent].items() if k != dropped}
+    state = {"decision": decision(intent=intent, **fields)}
+    assert route_after_router(state) == "clarify"
+
+
+def test_income_without_customer_name_never_reaches_the_tool():
+    state = {"decision": decision(intent="log_income", amount=4000, description="sale of chair")}
+    assert missing_required_fields(state["decision"]) == ["customer_name"]
+    assert route_after_router(state) == "clarify"
+
+
+def test_blank_customer_name_counts_as_missing():
+    state = {
+        "decision": decision(
+            intent="log_income", amount=4000, description="chair", customer_name="   "
+        )
+    }
+    assert route_after_router(state) == "clarify"
+
+
+def test_income_without_item_description_never_reaches_the_tool():
+    state = {"decision": decision(intent="log_income", amount=20000, customer_name="Rajesh")}
+    assert missing_required_fields(state["decision"]) == ["description"]
     assert route_after_router(state) == "clarify"
 
 
@@ -76,13 +127,14 @@ async def test_call_expense_tool_defaults_payment_method_and_description(capture
 
 
 async def test_call_income_tool_defaults_category_to_cash_sale(captured_calls):
-    state = {"decision": decision(intent="log_income", amount=40)}
+    state = {"decision": decision(intent="log_income", amount=40, customer_name="Ramesh")}
     await agent_graph.call_income_tool(state)
 
     name, args = captured_calls[0]
     assert name == "log_income"
     assert args["category"] == "cash_sale"
     assert args["payment_method"] == "cash"
+    assert args["customer_name"] == "Ramesh"
 
 
 async def test_call_credit_repayment_tool_passes_customer_and_amount(captured_calls):
@@ -155,9 +207,21 @@ async def test_call_report_tool_comparison_fetches_two_periods(captured_calls):
 
 
 async def test_clarify_node_uses_router_question():
-    state = {"decision": decision(intent="log_expense", clarification_needed=True, clarification_question="How much did you spend?")}
+    state = {"decision": decision(intent="log_expense", amount=40, category="inventory", clarification_needed=True, clarification_question="How much did you spend?")}
     result = await agent_graph.clarify_node(state)
     assert result["reply"] == "How much did you spend?"
+
+
+async def test_clarify_node_asks_for_missing_customer_name_on_income():
+    state = {"decision": decision(intent="log_income", amount=4000, description="chair")}
+    result = await agent_graph.clarify_node(state)
+    assert "customer" in result["reply"].lower()
+
+
+async def test_clarify_node_asks_for_item_and_customer_in_one_turn():
+    state = {"decision": decision(intent="log_income", amount=20000)}
+    reply = (await agent_graph.clarify_node(state))["reply"].lower()
+    assert "sold" in reply and "customer" in reply
 
 
 async def test_unclear_node_returns_canned_reply():
