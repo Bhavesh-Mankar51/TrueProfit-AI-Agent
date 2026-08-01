@@ -116,7 +116,13 @@ Rules:
   online/UPI/card, in which case category="online_payment". Never ask for category on income.
 - Only set clarification_needed=true when a field is genuinely required and cannot be
   defaulted or inferred from the conversation:
-    log_expense requires amount AND category
+    log_expense requires amount AND category AND description AND vendor_name —
+      description is what the money went on ("July electricity bill", "10 kg rice"),
+      vendor_name is who was paid (supplier, landlord, employee, utility company).
+      "paid 8000 for electricity" gives neither; ask for both. Never log an expense
+      with a blank description or payee. If the user says there is no particular
+      payee, set vendor_name="Unspecified"; if they can't detail the item, set
+      description to the category itself. Then proceed instead of asking again
     log_income requires amount AND description AND customer_name — description is what
       was sold ("chair", "2 bags of cement"), customer_name is who bought it. Always ask
       for whichever is missing: "write a sale of rs 20000" gives neither, "sold a chair
@@ -160,7 +166,7 @@ Rules:
 
 
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
-    "log_expense": ("amount", "category"),
+    "log_expense": ("amount", "category", "description", "vendor_name"),
     "log_income": ("amount", "description", "customer_name"),
     "log_credit_repayment": ("amount", "customer_name"),
     "vendor_credit": ("amount", "vendor_name", "due_date"),
@@ -171,12 +177,22 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
 FIELD_QUESTIONS: dict[str, str] = {
     "amount": "How much was it?",
     "category": "What category should I file that under?",
-    "description": "What was sold?",
+    "description": "What was it for?",
     "customer_name": "Which customer was this for?",
     "vendor_name": "Which vendor was this with?",
     "due_date": "When is it due to be paid back?",
     "dues_type": "Vendor dues (money you owe) or customer dues (money owed to you)?",
 }
+
+INTENT_FIELD_QUESTIONS: dict[tuple[str, str], str] = {
+    ("log_income", "description"): "What was sold?",
+    ("log_expense", "description"): "What was the expense for?",
+    ("log_expense", "vendor_name"): "Who did you pay?",
+}
+
+
+def question_for(intent: str, field: str) -> str:
+    return INTENT_FIELD_QUESTIONS.get((intent, field)) or FIELD_QUESTIONS[field]
 
 
 def missing_required_fields(decision: RouterDecision) -> list[str]:
@@ -219,7 +235,7 @@ async def clarify_node(state: AgentState) -> dict:
     decision = _decision(state)
     missing = missing_required_fields(decision)
     if missing:
-        question = " ".join(FIELD_QUESTIONS[field] for field in missing)
+        question = " ".join(question_for(decision.intent, field) for field in missing)
     else:
         question = decision.clarification_question or "Could you clarify that?"
     return {"reply": question, "messages": [AIMessage(content=question)]}

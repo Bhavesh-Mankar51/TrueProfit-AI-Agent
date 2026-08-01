@@ -9,7 +9,9 @@ from app.agent import graph as agent_graph
 from app.agent.graph import RouterDecision, missing_required_fields, route_after_router
 
 COMPLETE_FIELDS = {
-    "log_expense": dict(amount=40, category="inventory"),
+    "log_expense": dict(
+        amount=40, category="inventory", description="10 kg rice", vendor_name="Sharma Traders"
+    ),
     "log_income": dict(amount=4000, description="chair", customer_name="Ramesh"),
     "log_credit_repayment": dict(amount=300, customer_name="Ramesh"),
     "vendor_credit": dict(amount=2000, vendor_name="Sharma Traders", due_date="2026-08-01"),
@@ -56,6 +58,8 @@ def test_route_after_router_clarification_overrides_intent():
         ("log_income", "description"),
         ("log_income", "amount"),
         ("log_expense", "category"),
+        ("log_expense", "description"),
+        ("log_expense", "vendor_name"),
         ("log_credit_repayment", "customer_name"),
         ("vendor_credit", "due_date"),
         ("customer_credit", "customer_name"),
@@ -106,8 +110,8 @@ def captured_calls(monkeypatch):
     return calls
 
 
-async def test_call_expense_tool_defaults_payment_method_and_description(captured_calls):
-    state = {"decision": decision(intent="log_expense", amount=40, category="inventory")}
+async def test_call_expense_tool_defaults_payment_method_and_date(captured_calls):
+    state = {"decision": decision(intent="log_expense", **COMPLETE_FIELDS["log_expense"])}
     result = await agent_graph.call_expense_tool(state)
 
     assert captured_calls == [
@@ -116,8 +120,8 @@ async def test_call_expense_tool_defaults_payment_method_and_description(capture
             {
                 "amount": 40,
                 "category": "inventory",
-                "description": "",
-                "vendor_name": None,
+                "description": "10 kg rice",
+                "vendor_name": "Sharma Traders",
                 "payment_method": "cash",
                 "date": None,
             },
@@ -207,9 +211,23 @@ async def test_call_report_tool_comparison_fetches_two_periods(captured_calls):
 
 
 async def test_clarify_node_uses_router_question():
-    state = {"decision": decision(intent="log_expense", amount=40, category="inventory", clarification_needed=True, clarification_question="How much did you spend?")}
+    state = {
+        "decision": decision(
+            intent="log_expense",
+            clarification_needed=True,
+            clarification_question="How much did you spend?",
+            **COMPLETE_FIELDS["log_expense"],
+        )
+    }
     result = await agent_graph.clarify_node(state)
     assert result["reply"] == "How much did you spend?"
+
+
+async def test_clarify_node_asks_expense_specific_wording():
+    state = {"decision": decision(intent="log_expense", amount=8000, category="electricity")}
+    reply = (await agent_graph.clarify_node(state))["reply"].lower()
+    assert "expense for" in reply and "pay" in reply
+    assert "sold" not in reply
 
 
 async def test_clarify_node_asks_for_missing_customer_name_on_income():
