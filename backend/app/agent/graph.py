@@ -110,25 +110,30 @@ Intents:
 - other: anything that doesn't fit (greetings, unrelated chat, unclear requests)
 
 Rules:
-- Default payment_method to "cash" and date to today ({today}) when not specified — do not
-  ask about these.
-- For log_income, default category to "cash_sale" unless the message mentions
-  online/UPI/card, in which case category="online_payment". Never ask for category on income.
+- Default date to today ({today}) when not specified — never ask about the date.
+- Never assume payment_method on income or expenses — ask when it isn't stated.
+- payment_method is one of cash | upi | card. Map what the user says: UPI, GPay, PhonePe,
+  Paytm, net banking, bank transfer, "online" -> "upi"; card, swipe, debit/credit card ->
+  "card"; cash, hand, counter -> "cash".
+- Never set category on income yourself — it is derived from payment_method.
 - Only set clarification_needed=true when a field is genuinely required and cannot be
   defaulted or inferred from the conversation:
-    log_expense requires amount AND category AND description AND vendor_name —
-      description is what the money went on ("July electricity bill", "10 kg rice"),
-      vendor_name is who was paid (supplier, landlord, employee, utility company).
-      "paid 8000 for electricity" gives neither; ask for both. Never log an expense
-      with a blank description or payee. If the user says there is no particular
-      payee, set vendor_name="Unspecified"; if they can't detail the item, set
-      description to the category itself. Then proceed instead of asking again
-    log_income requires amount AND description AND customer_name — description is what
-      was sold ("chair", "2 bags of cement"), customer_name is who bought it. Always ask
-      for whichever is missing: "write a sale of rs 20000" gives neither, "sold a chair
-      for 4000" gives no customer. Never log a sale with a blank item or customer. Ask
-      for every missing field in one question, not one per turn. If the user says there
-      is no name — walk-in, unknown, cash counter, "doesn't matter" — set
+    log_expense requires amount AND category AND description AND vendor_name AND
+      payment_method — description is what the money went on ("July electricity bill",
+      "10 kg rice"), vendor_name is who was paid (supplier, landlord, employee, utility
+      company), payment_method is how it was paid. "paid 8000 for electricity" gives
+      none of the three; ask for all of them in one question. Never log an expense with
+      a blank description or payee, and never assume it was cash. If the user says there
+      is no particular payee, set vendor_name="Unspecified"; if they can't detail the
+      item, set description to the category itself. Then proceed instead of asking again
+    log_income requires amount AND description AND customer_name AND payment_method —
+      description is what was sold ("chair", "2 bags of cement"), customer_name is who
+      bought it, payment_method is how they paid. Always ask for whichever is missing:
+      "write a sale of rs 20000" gives none of the three, "sold a chair for 4000 to
+      Karan" gives no payment mode. Never log a sale with a blank item or customer, and
+      never assume it was cash — a sale paid by UPI recorded as cash is a wrong record.
+      Ask for every missing field in one question, not one per turn. If the user says
+      there is no name — walk-in, unknown, cash counter, "doesn't matter" — set
       customer_name="Walk-in customer"; if they say the item is unspecified or a mix of
       things, set description="Unspecified items". Then proceed instead of asking again
     log_credit_repayment requires amount AND customer_name
@@ -166,8 +171,8 @@ Rules:
 
 
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
-    "log_expense": ("amount", "category", "description", "vendor_name"),
-    "log_income": ("amount", "description", "customer_name"),
+    "log_expense": ("amount", "category", "description", "vendor_name", "payment_method"),
+    "log_income": ("amount", "description", "customer_name", "payment_method"),
     "log_credit_repayment": ("amount", "customer_name"),
     "vendor_credit": ("amount", "vendor_name", "due_date"),
     "customer_credit": ("amount", "customer_name", "due_date"),
@@ -182,12 +187,14 @@ FIELD_QUESTIONS: dict[str, str] = {
     "vendor_name": "Which vendor was this with?",
     "due_date": "When is it due to be paid back?",
     "dues_type": "Vendor dues (money you owe) or customer dues (money owed to you)?",
+    "payment_method": "How was it paid — cash, UPI, or card?",
 }
 
 INTENT_FIELD_QUESTIONS: dict[tuple[str, str], str] = {
     ("log_income", "description"): "What was sold?",
     ("log_expense", "description"): "What was the expense for?",
     ("log_expense", "vendor_name"): "Who did you pay?",
+    ("log_expense", "payment_method"): "How did you pay — cash, UPI, or card?",
 }
 
 
@@ -257,7 +264,7 @@ async def call_expense_tool(state: AgentState) -> dict:
         "category": d.category,
         "description": d.description or "",
         "vendor_name": d.vendor_name,
-        "payment_method": d.payment_method or "cash",
+        "payment_method": (d.payment_method or "").strip().lower() or "cash",
         "date": d.date,
     }
     try:
@@ -267,14 +274,22 @@ async def call_expense_tool(state: AgentState) -> dict:
         return {"tool_result": None, "tool_error": str(exc)}
 
 
+INCOME_CATEGORY_BY_PAYMENT_METHOD = {
+    "cash": "cash_sale",
+    "upi": "online_payment",
+    "card": "online_payment",
+}
+
+
 async def call_income_tool(state: AgentState) -> dict:
     d = _decision(state)
+    payment_method = (d.payment_method or "").strip().lower()
     args = {
         "amount": d.amount,
-        "category": d.category or "cash_sale",
+        "category": INCOME_CATEGORY_BY_PAYMENT_METHOD.get(payment_method, "cash_sale"),
         "item_description": d.description or "",
         "customer_name": d.customer_name,
-        "payment_method": d.payment_method or "cash",
+        "payment_method": payment_method or "cash",
         "date": d.date,
     }
     try:
