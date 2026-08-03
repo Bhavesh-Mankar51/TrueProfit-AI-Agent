@@ -11,24 +11,35 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
-        <h1>Shopkeeper Agent</h1>
+        <h1>TrueProfit AI Agent</h1>
       </header>
       <ReminderBanner />
       <div className="app-body">
         <ChatWindow onActionTaken={() => setRefreshKey((k) => k + 1)} />
         <aside className="sidebar">
-          <div className="tabs">
-            <button className={tab === "dues" ? "active" : ""} onClick={() => setTab("dues")}>
-              Dues
-            </button>
-            <button
-              className={tab === "reports" ? "active" : ""}
-              onClick={() => setTab("reports")}
-            >
-              Reports
-            </button>
+          <div className="sidebar-head">
+            <div className="tabs" role="tablist" aria-label="Sidebar sections">
+              <button
+                role="tab"
+                aria-selected={tab === "dues"}
+                className={tab === "dues" ? "active" : ""}
+                onClick={() => setTab("dues")}
+              >
+                Dues
+              </button>
+              <button
+                role="tab"
+                aria-selected={tab === "reports"}
+                className={tab === "reports" ? "active" : ""}
+                onClick={() => setTab("reports")}
+              >
+                Reports
+              </button>
+            </div>
           </div>
-          {tab === "dues" ? <DuesPanel refreshKey={refreshKey} /> : <ReportsView />}
+          <div className="sidebar-body">
+            {tab === "dues" ? <DuesPanel refreshKey={refreshKey} /> : <ReportsView />}
+          </div>
         </aside>
       </div>
     </div>
