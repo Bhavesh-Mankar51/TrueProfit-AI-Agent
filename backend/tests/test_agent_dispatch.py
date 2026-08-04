@@ -21,6 +21,7 @@ COMPLETE_FIELDS = {
     ),
     "log_credit_repayment": dict(amount=300, customer_name="Ramesh"),
     "vendor_credit": dict(amount=2000, vendor_name="Sharma Traders", due_date="2026-08-01"),
+    "vendor_payment": dict(amount=2000, vendor_name="Sharma Traders", payment_method="cash"),
     "customer_credit": dict(amount=300, customer_name="Ramesh", due_date="2026-08-01"),
     "query_report": {},
     "list_dues": dict(dues_type="vendor"),
@@ -41,6 +42,7 @@ def decision(**overrides) -> RouterDecision:
         ("log_income", "call_income_tool"),
         ("log_credit_repayment", "call_credit_repayment_tool"),
         ("vendor_credit", "call_vendor_credit_tool"),
+        ("vendor_payment", "call_vendor_payment_tool"),
         ("customer_credit", "call_customer_credit_tool"),
         ("query_report", "call_report_tool"),
         ("list_dues", "call_list_dues_tool"),
@@ -70,6 +72,8 @@ def test_route_after_router_clarification_overrides_intent():
         ("log_expense", "payment_method"),
         ("log_credit_repayment", "customer_name"),
         ("vendor_credit", "due_date"),
+        ("vendor_payment", "vendor_name"),
+        ("vendor_payment", "payment_method"),
         ("customer_credit", "customer_name"),
         ("list_dues", "dues_type"),
     ],
@@ -222,6 +226,23 @@ async def test_call_vendor_credit_tool(captured_calls):
     assert name == "add_vendor_credit"
     assert args["vendor_name"] == "Sharma Traders"
     assert args["due_date"] == "2026-08-01"
+
+
+async def test_call_vendor_payment_tool(captured_calls):
+    fields = {**COMPLETE_FIELDS["vendor_payment"], "payment_method": "UPI"}
+    state = {"decision": decision(intent="vendor_payment", **fields)}
+    await agent_graph.call_vendor_payment_tool(state)
+
+    name, args = captured_calls[0]
+    assert name == "log_vendor_payment"
+    assert args["vendor_name"] == "Sharma Traders"
+    assert args["amount"] == 2000
+    assert args["payment_method"] == "upi"
+
+
+def test_vendor_payment_is_distinct_from_vendor_credit():
+    state = {"decision": decision(intent="vendor_payment", **COMPLETE_FIELDS["vendor_payment"])}
+    assert route_after_router(state) == "call_vendor_payment_tool"
 
 
 async def test_call_customer_credit_tool_passes_due_date(captured_calls):

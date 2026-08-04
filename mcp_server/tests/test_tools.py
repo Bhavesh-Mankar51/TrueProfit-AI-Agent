@@ -6,7 +6,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from mcp_server.tools.credit import add_customer_credit, add_vendor_credit, list_pending_dues
+from mcp_server.tools.credit import (
+    add_customer_credit,
+    add_vendor_credit,
+    list_pending_dues,
+    log_vendor_payment,
+)
 from mcp_server.tools.expenses import log_expense
 from mcp_server.tools.income import log_credit_repayment, log_income
 from mcp_server.tools.reports import get_expense_summary, get_income_summary, get_profit_summary
@@ -65,6 +70,78 @@ async def test_add_vendor_credit_and_list_pending_dues(db_pool):
     assert len(dues) == 1
     assert dues[0]["vendor_name"] == "Sharma Traders"
     assert dues[0]["amount"] == 2000.0
+
+
+async def test_vendor_payment_settles_due_and_records_expense(db_pool):
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=2000, due_date="2026-08-01")
+
+    result = await log_vendor_payment(vendor_name="Sharma Traders", amount=2000)
+
+    assert len(result["settled_vendor_ledger_ids"]) == 1
+    assert result["unapplied_amount"] == 0.0
+    assert result["amount"] == 2000.0
+    assert result["category"] == "vendor_payment"
+    assert result["vendor_id"] is not None
+
+    assert await list_pending_dues(type="vendor") == []
+
+    summary = await get_expense_summary(start_date="2020-01-01", end_date="2030-01-01")
+    assert summary["total"] == 2000.0
+
+
+async def test_vendor_payment_settles_oldest_dues_first(db_pool):
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=500, due_date="2026-07-01")
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=800, due_date="2026-07-15")
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=900, due_date="2026-08-01")
+
+    result = await log_vendor_payment(vendor_name="Sharma Traders", amount=1300)
+
+    assert len(result["settled_vendor_ledger_ids"]) == 2
+    assert result["unapplied_amount"] == 0.0
+
+    dues = await list_pending_dues(type="vendor")
+    assert [d["amount"] for d in dues] == [900.0]
+
+
+async def test_vendor_payment_smaller_than_oldest_bill_settles_nothing(db_pool):
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=2000, due_date="2026-08-01")
+
+    result = await log_vendor_payment(vendor_name="Sharma Traders", amount=500)
+
+    assert result["settled_vendor_ledger_ids"] == []
+    assert result["unapplied_amount"] == 500.0
+
+    dues = await list_pending_dues(type="vendor")
+    assert [d["amount"] for d in dues] == [2000.0]
+
+    summary = await get_expense_summary(start_date="2020-01-01", end_date="2030-01-01")
+    assert summary["total"] == 500.0
+
+
+async def test_vendor_payment_with_no_pending_dues_still_records_expense(db_pool):
+    result = await log_vendor_payment(vendor_name="Nobody Traders", amount=750, payment_method="upi")
+
+    assert result["settled_vendor_ledger_ids"] == []
+    assert result["unapplied_amount"] == 750.0
+    assert result["payment_method"] == "upi"
+
+    summary = await get_expense_summary(start_date="2020-01-01", end_date="2030-01-01")
+    assert summary["total"] == 750.0
+
+
+async def test_vendor_payment_only_settles_that_vendors_dues(db_pool):
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=1000)
+    await add_vendor_credit(vendor_name="Kisan Depot", amount=1000)
+
+    await log_vendor_payment(vendor_name="Sharma Traders", amount=1000)
+
+    dues = await list_pending_dues(type="vendor")
+    assert [d["vendor_name"] for d in dues] == ["Kisan Depot"]
+
+
+async def test_vendor_payment_rejects_blank_vendor(db_pool):
+    with pytest.raises(ValidationError):
+        await log_vendor_payment(vendor_name="  ", amount=100)
 
 
 async def test_add_customer_credit_and_list_pending_dues(db_pool):

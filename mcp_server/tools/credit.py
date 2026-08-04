@@ -1,7 +1,16 @@
 from mcp_server.db import DEFAULT_SHOP_ID, get_pool
 from mcp_server.serialize import row_to_dict, rows_to_list
 from mcp_server.tools.vendors import resolve_vendor_id
-from mcp_server.validation import clean_amount, clean_date, clean_dues_type, clean_name, clean_text
+from mcp_server.validation import (
+    clean_amount,
+    clean_date,
+    clean_dues_type,
+    clean_name,
+    clean_payment_method,
+    clean_text,
+)
+
+VENDOR_PAYMENT_CATEGORY = "vendor_payment"
 
 
 async def add_vendor_credit(
@@ -63,6 +72,81 @@ async def add_customer_credit(
             due_date_cleaned,
         )
     return row_to_dict(row)
+
+
+async def log_vendor_payment(
+    vendor_name: str,
+    amount: float,
+    payment_method: str = "cash",
+    date: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """Log the shop paying a vendor money it owed. Writes an expense row
+    (category=vendor_payment) and marks matching pending vendor_ledger rows as
+    settled (oldest first), in one transaction. Use log_expense instead for a
+    fresh purchase that was never recorded as a credit due."""
+    vendor_name = clean_name(vendor_name, "vendor_name")
+    amount = clean_amount(amount)
+    payment_method = clean_payment_method(payment_method)
+    payment_date = clean_date(date)
+    note = clean_text(note)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            vendor_id = await resolve_vendor_id(conn, vendor_name, DEFAULT_SHOP_ID)
+
+            pending_rows = await conn.fetch(
+                """
+                SELECT id, amount FROM vendor_ledger
+                WHERE vendor_id = $1 AND type = 'owed' AND status = 'pending'
+                ORDER BY due_date NULLS LAST, created_at ASC, id ASC
+                FOR UPDATE
+                """,
+                vendor_id,
+            )
+
+            remaining = amount
+            settled_ids: list[int] = []
+            for row in pending_rows:
+                if row["amount"] > remaining:
+                    break
+                settled_ids.append(row["id"])
+                remaining -= row["amount"]
+
+            if settled_ids:
+                await conn.execute(
+                    "UPDATE vendor_ledger SET status = 'settled' WHERE id = ANY($1::int[])",
+                    settled_ids,
+                )
+
+            await conn.execute(
+                "INSERT INTO categories (name) VALUES ($1) ON CONFLICT DO NOTHING",
+                VENDOR_PAYMENT_CATEGORY,
+            )
+
+            expense_row = await conn.fetchrow(
+                """
+                INSERT INTO expenses
+                    (shop_id, amount, category, description, vendor_id, payment_method, expense_date)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING id, shop_id, amount, category, description, vendor_id,
+                          payment_method, expense_date, created_at
+                """,
+                DEFAULT_SHOP_ID,
+                amount,
+                VENDOR_PAYMENT_CATEGORY,
+                note or f"Payment to {vendor_name}",
+                vendor_id,
+                payment_method,
+                payment_date,
+            )
+
+    result = row_to_dict(expense_row)
+    result["vendor_name"] = vendor_name
+    result["settled_vendor_ledger_ids"] = settled_ids
+    result["unapplied_amount"] = float(remaining)
+    return result
 
 
 async def list_pending_dues(type: str) -> list[dict]:

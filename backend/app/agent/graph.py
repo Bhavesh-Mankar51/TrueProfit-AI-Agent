@@ -30,6 +30,7 @@ Intent = Literal[
     "log_income",
     "log_credit_repayment",
     "vendor_credit",
+    "vendor_payment",
     "customer_credit",
     "query_report",
     "list_dues",
@@ -104,6 +105,8 @@ Intents:
 - log_income: a sale / money received (cash or online), NOT a customer repaying prior credit
 - log_credit_repayment: a customer is paying back money they previously owed (udhaar repayment)
 - vendor_credit: the shop now has an accounts payable to a vendor (bought on credit / to pay later)
+- vendor_payment: the shop is paying a vendor back money it already owed (settling a bill
+  that was recorded earlier as vendor_credit)
 - customer_credit: the shop gave a customer goods/money on credit (udhaar given)
 - query_report: asking about spend/income/profit, summaries, or comparisons over a period
 - list_dues: asking about accounts payable (who they owe money to), or who owes them money
@@ -140,6 +143,8 @@ Rules:
     vendor_credit requires amount AND vendor_name AND due_date — always ask for a due
       date if the message doesn't give one (e.g. "next week", "by the 5th"); never
       assume there's no due date just because it wasn't mentioned
+    vendor_payment requires amount AND vendor_name AND payment_method — ask for
+      whichever is missing; never assume the payment was cash
     customer_credit requires amount AND customer_name AND due_date — same rule: always
       ask when it's not given, don't silently leave it blank
     list_dues requires dues_type (vendor or customer) — infer it, don't ask by default.
@@ -162,6 +167,10 @@ Rules:
   If clarification_needed, keep clarification_question short (one sentence).
 - Treat "customer paid back / returned / cleared what they owed" as log_credit_repayment,
   never log_income.
+- Treat "paid the vendor / cleared Sharma's bill / settled what I owed the supplier /
+  paid back the wholesaler" as vendor_payment, never log_expense and never vendor_credit
+  (vendor_credit creates a new debt; vendor_payment clears an existing one). A purchase
+  paid on the spot that was never recorded as a due is log_expense, not vendor_payment.
 - For query_report, resolve relative dates ("this month", "last week", "today") into
   start_date/end_date (YYYY-MM-DD) relative to today ({today}). If the user asks something
   like "is my electricity bill higher than usual", set comparison=true and category to the
@@ -175,6 +184,7 @@ REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "log_income": ("amount", "description", "customer_name", "payment_method"),
     "log_credit_repayment": ("amount", "customer_name"),
     "vendor_credit": ("amount", "vendor_name", "due_date"),
+    "vendor_payment": ("amount", "vendor_name", "payment_method"),
     "customer_credit": ("amount", "customer_name", "due_date"),
     "list_dues": ("dues_type",),
 }
@@ -195,6 +205,8 @@ INTENT_FIELD_QUESTIONS: dict[tuple[str, str], str] = {
     ("log_expense", "description"): "What was the expense for?",
     ("log_expense", "vendor_name"): "Who did you pay?",
     ("log_expense", "payment_method"): "How did you pay — cash, UPI, or card?",
+    ("vendor_payment", "vendor_name"): "Which vendor did you pay?",
+    ("vendor_payment", "payment_method"): "How did you pay — cash, UPI, or card?",
 }
 
 
@@ -231,6 +243,7 @@ def route_after_router(state: AgentState) -> str:
         "log_income": "call_income_tool",
         "log_credit_repayment": "call_credit_repayment_tool",
         "vendor_credit": "call_vendor_credit_tool",
+        "vendor_payment": "call_vendor_payment_tool",
         "customer_credit": "call_customer_credit_tool",
         "query_report": "call_report_tool",
         "list_dues": "call_list_dues_tool",
@@ -324,6 +337,22 @@ async def call_vendor_credit_tool(state: AgentState) -> dict:
         return {"tool_result": None, "tool_error": str(exc)}
 
 
+async def call_vendor_payment_tool(state: AgentState) -> dict:
+    d = _decision(state)
+    args = {
+        "vendor_name": d.vendor_name,
+        "amount": d.amount,
+        "payment_method": (d.payment_method or "").strip().lower() or "cash",
+        "date": d.date,
+        "note": d.note,
+    }
+    try:
+        result = await _invoke_tool("log_vendor_payment", args)
+        return {"tool_result": result, "tool_error": None}
+    except Exception as exc:  # noqa: BLE001
+        return {"tool_result": None, "tool_error": str(exc)}
+
+
 async def call_customer_credit_tool(state: AgentState) -> dict:
     d = _decision(state)
     args = {
@@ -402,7 +431,7 @@ async def call_report_tool(state: AgentState) -> dict:
                 "get_profit_summary", {"start_date": start_date, "end_date": end_date}
             )
         return {"tool_result": result, "tool_error": None}
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc: 
         return {"tool_result": None, "tool_error": str(exc)}
 
 
@@ -415,6 +444,12 @@ and state what's missing or wrong in plain language.
 An empty tool_result ([] or {}) is a successful answer meaning nothing is outstanding —
 report that plainly. Never treat it as a failure and never say you didn't receive any
 information.
+
+For vendor_payment, settled_vendor_ledger_ids says how many outstanding bills the payment
+cleared and unapplied_amount is the part that matched no bill. Confirm both plainly:
+all cleared -> "Logged: Rs 2000 paid to Sharma Traders, bill cleared."; nothing matched
+-> say the payment is recorded but no pending bill matched it, so nothing was marked
+settled; a leftover -> name the amount still unapplied.
 
 The payload also carries the request context. When it is a dues question, describe the
 side that was actually asked about: dues_type="customer" is money customers owe the shop
@@ -449,6 +484,7 @@ def build_graph(checkpointer):
     graph.add_node("call_income_tool", call_income_tool)
     graph.add_node("call_credit_repayment_tool", call_credit_repayment_tool)
     graph.add_node("call_vendor_credit_tool", call_vendor_credit_tool)
+    graph.add_node("call_vendor_payment_tool", call_vendor_payment_tool)
     graph.add_node("call_customer_credit_tool", call_customer_credit_tool)
     graph.add_node("call_list_dues_tool", call_list_dues_tool)
     graph.add_node("call_report_tool", call_report_tool)
@@ -465,6 +501,7 @@ def build_graph(checkpointer):
             "call_income_tool": "call_income_tool",
             "call_credit_repayment_tool": "call_credit_repayment_tool",
             "call_vendor_credit_tool": "call_vendor_credit_tool",
+            "call_vendor_payment_tool": "call_vendor_payment_tool",
             "call_customer_credit_tool": "call_customer_credit_tool",
             "call_list_dues_tool": "call_list_dues_tool",
             "call_report_tool": "call_report_tool",
@@ -476,6 +513,7 @@ def build_graph(checkpointer):
         "call_income_tool",
         "call_credit_repayment_tool",
         "call_vendor_credit_tool",
+        "call_vendor_payment_tool",
         "call_customer_credit_tool",
         "call_list_dues_tool",
         "call_report_tool",
