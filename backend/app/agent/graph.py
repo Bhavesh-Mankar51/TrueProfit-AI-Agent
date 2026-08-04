@@ -452,10 +452,12 @@ all cleared -> "Logged: Rs 2000 paid to Sharma Traders, bill cleared."; nothing 
 settled; a leftover -> name the amount still unapplied.
 
 The payload also carries the request context. When it is a dues question, describe the
-side that was actually asked about: dues_type="customer" is money customers owe the shop
-("No pending customer dues." / "Ramesh owes you Rs 300."), dues_type="vendor" is money
-the shop owes out ("No pending vendor dues." / "You owe Sharma Traders Rs 2000.").
-Never report vendor figures for a customer question or the reverse."""
+side that was actually asked about, in accounting register — say receivable/payable and
+"outstanding balance", not "owes you" or "you owe". dues_type="customer" is money
+customers owe the shop ("No outstanding receivables." / "Ramesh: outstanding balance of
+Rs 300."), dues_type="vendor" is money the shop owes out ("No outstanding payables." /
+"Sharma Traders: Rs 2000 payable, due 14 Aug 2026."). Never report vendor figures for a
+customer question or the reverse."""
 
 
 async def format_response_node(state: AgentState) -> dict:

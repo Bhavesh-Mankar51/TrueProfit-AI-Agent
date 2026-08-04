@@ -7,6 +7,13 @@ const GREETING = {
   text: "Hi! Tell me about a sale, an expense, or ask for a report — e.g. \"sold 2 packets of biscuits for 40\".",
 };
 
+const QUICK_ACTIONS = [
+  { label: "Today's sales", message: "How much did I sell today?" },
+  { label: "This month's profit", message: "What is my profit this month?" },
+  { label: "Receivables", message: "Show outstanding receivables from customers." },
+  { label: "Payables", message: "Show outstanding payables to vendors." },
+];
+
 function getSessionId() {
   let id = localStorage.getItem("shopkeeper_session_id");
   if (!id) {
@@ -43,13 +50,10 @@ export default function ChatWindow({ onActionTaken }) {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
-  async function handleSend(e) {
-    e.preventDefault();
-    const text = input.trim();
+  async function submitMessage(text) {
     if (!text || loading) return;
 
     setMessages((m) => [...m, { role: "user", text }]);
-    setInput("");
     setLoading(true);
     setError(null);
 
@@ -68,6 +72,14 @@ export default function ChatWindow({ onActionTaken }) {
     }
   }
 
+  function handleSend(e) {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput("");
+    submitMessage(text);
+  }
+
   return (
     <div className="chat-window">
       <div className="chat-messages">
@@ -82,6 +94,19 @@ export default function ChatWindow({ onActionTaken }) {
         <div ref={bottomRef} />
       </div>
       {error && <div className="error-banner">{error}</div>}
+      <div className="quick-actions" role="group" aria-label="Quick questions">
+        {QUICK_ACTIONS.map((action) => (
+          <button
+            key={action.label}
+            type="button"
+            className="chip"
+            disabled={loading}
+            onClick={() => submitMessage(action.message)}
+          >
+            {action.label}
+          </button>
+        ))}
+      </div>
       <form className="chat-input-row" onSubmit={handleSend}>
         <input
           type="text"
