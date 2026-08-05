@@ -27,8 +27,14 @@ function DuesList({ rows, nameKey, emptyText, tone }) {
             </div>
             <div className="due-side">
               <span className="due-amount">{formatAmount(d.amount)}</span>
-              {d.credit_date && (
-                <span className="due-since">since {formatShortDate(d.credit_date)}</span>
+              {Number(d.paid_amount) > 0 ? (
+                <span className="due-since">
+                  {formatAmount(d.paid_amount)} paid of {formatAmount(d.original_amount)}
+                </span>
+              ) : (
+                d.credit_date && (
+                  <span className="due-since">since {formatShortDate(d.credit_date)}</span>
+                )
               )}
             </div>
           </li>

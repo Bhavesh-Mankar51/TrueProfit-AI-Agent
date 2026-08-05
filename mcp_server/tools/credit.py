@@ -82,9 +82,10 @@ async def log_vendor_payment(
     note: str | None = None,
 ) -> dict:
     """Log the shop paying a vendor money it owed. Writes an expense row
-    (category=vendor_payment) and marks matching pending vendor_ledger rows as
-    settled (oldest first), in one transaction. Use log_expense instead for a
-    fresh purchase that was never recorded as a credit due."""
+    (category=vendor_payment) and applies the money to that vendor's pending
+    vendor_ledger rows oldest first, in one transaction. Part payments reduce a
+    bill's outstanding balance; a bill is marked settled once fully paid. Use
+    log_expense instead for a fresh purchase never recorded as a credit due."""
     vendor_name = clean_name(vendor_name, "vendor_name")
     amount = clean_amount(amount)
     payment_method = clean_payment_method(payment_method)
@@ -98,7 +99,7 @@ async def log_vendor_payment(
 
             pending_rows = await conn.fetch(
                 """
-                SELECT id, amount FROM vendor_ledger
+                SELECT id, amount, paid_amount FROM vendor_ledger
                 WHERE vendor_id = $1 AND type = 'owed' AND status = 'pending'
                 ORDER BY due_date NULLS LAST, created_at ASC, id ASC
                 FOR UPDATE
@@ -108,16 +109,33 @@ async def log_vendor_payment(
 
             remaining = amount
             settled_ids: list[int] = []
+            applied: list[dict] = []
             for row in pending_rows:
-                if row["amount"] > remaining:
+                if remaining <= 0:
                     break
-                settled_ids.append(row["id"])
-                remaining -= row["amount"]
+                outstanding = row["amount"] - row["paid_amount"]
+                if outstanding <= 0:
+                    continue
 
-            if settled_ids:
+                applied_now = min(outstanding, remaining)
+                remaining -= applied_now
+                new_paid = row["paid_amount"] + applied_now
+                fully_paid = new_paid >= row["amount"]
+
                 await conn.execute(
-                    "UPDATE vendor_ledger SET status = 'settled' WHERE id = ANY($1::int[])",
-                    settled_ids,
+                    "UPDATE vendor_ledger SET paid_amount = $2, status = $3 WHERE id = $1",
+                    row["id"],
+                    new_paid,
+                    "settled" if fully_paid else "pending",
+                )
+                if fully_paid:
+                    settled_ids.append(row["id"])
+                applied.append(
+                    {
+                        "vendor_ledger_id": row["id"],
+                        "applied_amount": float(applied_now),
+                        "remaining_on_bill": float(row["amount"] - new_paid),
+                    }
                 )
 
             await conn.execute(
@@ -145,6 +163,7 @@ async def log_vendor_payment(
     result = row_to_dict(expense_row)
     result["vendor_name"] = vendor_name
     result["settled_vendor_ledger_ids"] = settled_ids
+    result["applied_to"] = applied
     result["unapplied_amount"] = float(remaining)
     return result
 
@@ -159,7 +178,10 @@ async def list_pending_dues(type: str) -> list[dict]:
         if dues_type == "vendor":
             rows = await conn.fetch(
                 """
-                SELECT vl.id, v.name AS vendor_name, vl.amount, vl.due_date, vl.note, vl.created_at
+                SELECT vl.id, v.name AS vendor_name,
+                       vl.amount - vl.paid_amount AS amount,
+                       vl.amount AS original_amount, vl.paid_amount,
+                       vl.due_date, vl.note, vl.created_at
                 FROM vendor_ledger vl
                 JOIN vendors v ON v.id = vl.vendor_id
                 WHERE vl.status = 'pending' AND vl.type = 'owed' AND v.shop_id = $1
@@ -170,7 +192,10 @@ async def list_pending_dues(type: str) -> list[dict]:
         else:
             rows = await conn.fetch(
                 """
-                SELECT id, customer_name, amount, credit_date, due_date, note, created_at
+                SELECT id, customer_name,
+                       amount - paid_amount AS amount,
+                       amount AS original_amount, paid_amount,
+                       credit_date, due_date, note, created_at
                 FROM customer_credit
                 WHERE status = 'pending' AND type = 'given' AND shop_id = $1
                 ORDER BY due_date NULLS LAST, credit_date ASC, created_at ASC

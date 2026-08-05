@@ -58,6 +58,63 @@ async def test_credit_repayment_settles_pending_row(db_pool):
     assert all(d["customer_name"] != "Ramesh" for d in dues)
 
 
+async def test_partial_repayment_reduces_balance_without_settling(db_pool):
+    await add_customer_credit(customer_name="Ramesh", amount=5000)
+
+    result = await log_credit_repayment(customer_name="Ramesh", amount=100)
+
+    assert result["settled_customer_credit_ids"] == []
+    assert result["unmatched_amount"] == 0.0
+    assert result["applied_to"] == [
+        {"customer_credit_id": result["applied_to"][0]["customer_credit_id"],
+         "applied_amount": 100.0,
+         "remaining_on_credit": 4900.0}
+    ]
+
+    dues = await list_pending_dues(type="customer")
+    assert [d["amount"] for d in dues] == [4900.0]
+    assert dues[0]["original_amount"] == 5000.0
+    assert dues[0]["paid_amount"] == 100.0
+
+
+async def test_repeated_part_repayments_eventually_settle_the_credit(db_pool):
+    await add_customer_credit(customer_name="Ramesh", amount=1000)
+
+    await log_credit_repayment(customer_name="Ramesh", amount=400)
+    await log_credit_repayment(customer_name="Ramesh", amount=400)
+    dues = await list_pending_dues(type="customer")
+    assert [d["amount"] for d in dues] == [200.0]
+
+    final = await log_credit_repayment(customer_name="Ramesh", amount=200)
+    assert len(final["settled_customer_credit_ids"]) == 1
+    assert await list_pending_dues(type="customer") == []
+
+
+async def test_repayment_settles_oldest_credits_first(db_pool):
+    await add_customer_credit(customer_name="Ramesh", amount=300, date="2026-07-01")
+    await add_customer_credit(customer_name="Ramesh", amount=500, date="2026-07-15")
+    await add_customer_credit(customer_name="Ramesh", amount=900, date="2026-08-01")
+
+    result = await log_credit_repayment(customer_name="Ramesh", amount=1000)
+
+    assert len(result["settled_customer_credit_ids"]) == 2
+    assert result["unmatched_amount"] == 0.0
+
+    dues = await list_pending_dues(type="customer")
+    assert [d["amount"] for d in dues] == [700.0]
+    assert dues[0]["paid_amount"] == 200.0
+
+
+async def test_repayment_larger_than_dues_reports_leftover(db_pool):
+    await add_customer_credit(customer_name="Ramesh", amount=300)
+
+    result = await log_credit_repayment(customer_name="Ramesh", amount=500)
+
+    assert len(result["settled_customer_credit_ids"]) == 1
+    assert result["unmatched_amount"] == 200.0
+    assert await list_pending_dues(type="customer") == []
+
+
 async def test_credit_repayment_with_no_pending_credit_leaves_unmatched(db_pool):
     result = await log_credit_repayment(customer_name="NoOneOwesThis", amount=100)
     assert result["settled_customer_credit_ids"] == []
@@ -103,19 +160,36 @@ async def test_vendor_payment_settles_oldest_dues_first(db_pool):
     assert [d["amount"] for d in dues] == [900.0]
 
 
-async def test_vendor_payment_smaller_than_oldest_bill_settles_nothing(db_pool):
-    await add_vendor_credit(vendor_name="Sharma Traders", amount=2000, due_date="2026-08-01")
+async def test_part_payment_reduces_bill_without_settling_it(db_pool):
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=30000, due_date="2026-08-01")
 
-    result = await log_vendor_payment(vendor_name="Sharma Traders", amount=500)
+    result = await log_vendor_payment(vendor_name="Sharma Traders", amount=3000)
 
     assert result["settled_vendor_ledger_ids"] == []
-    assert result["unapplied_amount"] == 500.0
+    assert result["unapplied_amount"] == 0.0
+    assert result["applied_to"][0]["applied_amount"] == 3000.0
+    assert result["applied_to"][0]["remaining_on_bill"] == 27000.0
 
     dues = await list_pending_dues(type="vendor")
-    assert [d["amount"] for d in dues] == [2000.0]
+    assert [d["amount"] for d in dues] == [27000.0]
+    assert dues[0]["original_amount"] == 30000.0
+    assert dues[0]["paid_amount"] == 3000.0
 
     summary = await get_expense_summary(start_date="2020-01-01", end_date="2030-01-01")
-    assert summary["total"] == 500.0
+    assert summary["total"] == 3000.0
+
+
+async def test_payment_spanning_two_bills_settles_one_and_reduces_the_next(db_pool):
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=500, due_date="2026-07-01")
+    await add_vendor_credit(vendor_name="Sharma Traders", amount=800, due_date="2026-07-15")
+
+    result = await log_vendor_payment(vendor_name="Sharma Traders", amount=900)
+
+    assert len(result["settled_vendor_ledger_ids"]) == 1
+    assert result["unapplied_amount"] == 0.0
+
+    dues = await list_pending_dues(type="vendor")
+    assert [d["amount"] for d in dues] == [400.0]
 
 
 async def test_vendor_payment_with_no_pending_dues_still_records_expense(db_pool):

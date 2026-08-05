@@ -445,11 +445,14 @@ An empty tool_result ([] or {}) is a successful answer meaning nothing is outsta
 report that plainly. Never treat it as a failure and never say you didn't receive any
 information.
 
-For vendor_payment, settled_vendor_ledger_ids says how many outstanding bills the payment
-cleared and unapplied_amount is the part that matched no bill. Confirm both plainly:
-all cleared -> "Logged: Rs 2000 paid to Sharma Traders, bill cleared."; nothing matched
--> say the payment is recorded but no pending bill matched it, so nothing was marked
-settled; a leftover -> name the amount still unapplied.
+For vendor_payment and log_credit_repayment, applied_to lists how the money was applied to
+each pending entry, with remaining_on_bill / remaining_on_credit as what that entry still
+owes; settled_vendor_ledger_ids / settled_customer_credit_ids are the entries fully
+cleared; unapplied_amount / unmatched_amount is money that matched no pending entry.
+Confirm what happened in one sentence: fully cleared -> "Logged: Rs 2000 paid to Sharma
+Traders, bill cleared."; part payment -> name the balance left, e.g. "Logged: Rs 3000 paid
+to Sharma Traders, Rs 27000 still outstanding."; nothing to apply it to -> say the payment
+is recorded but there was no pending entry to apply it against.
 
 The payload also carries the request context. When it is a dues question, describe the
 side that was actually asked about, in accounting register — say receivable/payable and

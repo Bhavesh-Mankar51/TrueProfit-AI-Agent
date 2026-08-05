@@ -34,7 +34,7 @@ async def check_due_reminders(lookahead_days: int | None = None) -> list[dict]:
         {
             "vendor_ledger_id": ledger.id,
             "vendor_name": vendor_name,
-            "amount": float(ledger.amount),
+            "amount": float(ledger.amount - (ledger.paid_amount or 0)),
             "due_date": ledger.due_date.isoformat() if ledger.due_date else None,
             "overdue": ledger.due_date < date.today() if ledger.due_date else False,
             "note": ledger.note,
